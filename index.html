@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backtrack</title>
+<style>
+  :root { --bg:#f6f4ef; --card:#fff; --ink:#1d1b18; --quiet:#6b665d; --line:#e2ddd2; --accent:#c2410c; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#16140f; --card:#211e18; --ink:#f1ede4; --quiet:#a39d90; --line:#36312a; --accent:#fb923c; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 system-ui, sans-serif; }
+  main { max-width:640px; margin:0 auto; padding:40px 16px; }
+  h1 { margin:0 0 4px; font-size:28px; }
+  p.sub { margin:0 0 24px; color:var(--quiet); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:16px; }
+  label { display:block; font-size:14px; color:var(--quiet); margin-bottom:6px; }
+  input[type=url] { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font-size:16px; }
+  .or { text-align:center; color:var(--quiet); font-size:14px; margin:12px 0; }
+  button { padding:10px 16px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); font-size:15px; cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; width:100%; margin-top:16px; font-weight:600; }
+  button[aria-pressed=true] { background:var(--ink); color:var(--bg); border-color:var(--ink); }
+  button:disabled { opacity:.5; cursor:default; }
+  #status { color:var(--quiet); min-height:24px; }
+  #status.err { color:var(--accent); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:12px; }
+  .row > span { font-size:14px; color:var(--quiet); min-width:56px; }
+  audio { width:100%; margin-top:8px; }
+  input[type=range] { flex:1; min-width:140px; accent-color:var(--accent); }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Backtrack</h1>
+  <p class="sub">Paste a song, get a backing track without the guitar, plus the guitar, bass and drum parts on their own.</p>
+
+  <form class="card" id="form">
+    <label for="url">YouTube link</label>
+    <input type="url" id="url" name="url" placeholder="https://www.youtube.com/watch?v=…">
+    <div class="or">or</div>
+    <label for="file">Audio file (mp3, wav, m4a, flac…)</label>
+    <input type="file" id="file" name="file" accept="audio/*">
+    <button class="primary" id="go">Separate guitar</button>
+  </form>
+
+  <p id="status" role="status"></p>
+
+  <section class="card" id="player" hidden>
+    <div class="row" role="group" aria-label="Track">
+      <button data-track="backtrack" aria-pressed="true">Backtrack</button>
+      <button data-track="guitar" aria-pressed="false">Guitar</button>
+      <button data-track="bass" aria-pressed="false">Bass</button>
+      <button data-track="drums" aria-pressed="false">Drums</button>
+      <button data-track="original" aria-pressed="false">Original</button>
+    </div>
+    <audio id="audio" controls preload="auto"></audio>
+    <div class="row">
+      <span>Speed</span>
+      <input type="range" id="speed" min="0.5" max="1.25" step="0.05" value="1" aria-label="Playback speed">
+      <span id="speedLabel">100%</span>
+    </div>
+    <div class="row">
+      <span>Loop</span>
+      <button id="setA">Set A</button>
+      <button id="setB">Set B</button>
+      <button id="clearLoop">Clear</button>
+      <span id="loopLabel">off</span>
+    </div>
+    <div class="row"><a id="download" download>Download this track</a></div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const audio = $("audio"), status = $("status");
+let job = null, track = "backtrack", loopA = null, loopB = null;
+
+const say = (msg, err = false) => { status.textContent = msg; status.className = err ? "err" : ""; };
+const fmt = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+const LABELS = { queued: "Waiting in line…", downloading: "Downloading audio…", separating: "Separating guitar (this takes a minute or two)…" };
+
+$("form").onsubmit = async e => {
+  e.preventDefault();
+  const body = new FormData();
+  body.append("url", $("url").value);
+  if ($("file").files[0]) body.append("file", $("file").files[0]);
+  $("go").disabled = true;
+  $("player").hidden = true;
+  say("Sending…");
+  try {
+    const r = await fetch("/api/jobs", { method: "POST", body });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || "Request failed");
+    job = j.id;
+    poll();
+  } catch (err) { say(err.message, true); $("go").disabled = false; }
+};
+
+async function poll() {
+  const j = await (await fetch(`/api/jobs/${job}`)).json();
+  if (j.status === "done") { say(j.cached ? "Already separated, loaded instantly." : ""); $("go").disabled = false; return load(); }
+  if (j.status === "error") { say(j.cached ? j.error : `Failed: ${j.error}`, true); $("go").disabled = false; return; }
+  say(LABELS[j.status] || j.status);
+  setTimeout(poll, 2000);
+}
+
+function load() {
+  const t = audio.currentTime, playing = !audio.paused;
+  audio.src = `/files/${job}/${track}.mp3`;
+  audio.preservesPitch = true;  // slow down without changing key
+  audio.playbackRate = +$("speed").value;
+  audio.onloadedmetadata = () => { audio.currentTime = Math.min(t, audio.duration || 0); if (playing) audio.play(); };
+  $("download").href = audio.src;
+  $("player").hidden = false;
+}
+
+document.querySelectorAll("[data-track]").forEach(b => b.onclick = () => {
+  track = b.dataset.track;
+  document.querySelectorAll("[data-track]").forEach(x => x.setAttribute("aria-pressed", x === b));
+  load();
+});
+
+$("speed").oninput = e => { audio.playbackRate = +e.target.value; $("speedLabel").textContent = `${Math.round(e.target.value * 100)}%`; };
+
+const showLoop = () => $("loopLabel").textContent = loopA == null ? "off" : `${fmt(loopA)} → ${loopB == null ? "…" : fmt(loopB)}`;
+$("setA").onclick = () => { loopA = audio.currentTime; if (loopB != null && loopB <= loopA) loopB = null; showLoop(); };
+$("setB").onclick = () => { if (loopA != null && audio.currentTime > loopA) { loopB = audio.currentTime; audio.currentTime = loopA; } showLoop(); };
+$("clearLoop").onclick = () => { loopA = loopB = null; showLoop(); };
+audio.ontimeupdate = () => { if (loopB != null && audio.currentTime >= loopB) audio.currentTime = loopA; };
+</script>
+</body>
+</html>

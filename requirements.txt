@@ -1,0 +1,6 @@
+demucs==4.0.1
+yt-dlp[default]  # includes yt-dlp-ejs; YouTube also needs Deno installed
+fastapi
+uvicorn
+python-multipart
+soundfile
